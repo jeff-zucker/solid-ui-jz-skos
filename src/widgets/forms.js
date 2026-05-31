@@ -819,8 +819,7 @@ field[ns.ui('Choice').uri] = function (
     const isSkosFrom = t => kb.holds(uiFrom, ns.rdf('type'), kb.sym(SKOS + t))
     if (isSkosFrom('ConceptScheme') || isSkosFrom('Collection') ||
         isSkosFrom('OrderedCollection') || isSkosFrom('Concept')) {
-      const deep = !!kb.any(form, ns.ui('deep'))
-      return gatherSkosOptions(kb, uiFrom, dataSource, { deep }).options
+      return gatherSkosOptions(kb, uiFrom, dataSource).options
     }
 
     possible = kb.each(undefined, ns.rdf('type'), uiFrom, formDoc)
@@ -861,10 +860,9 @@ field[ns.ui('Choice').uri] = function (
     const isSkosFrom = t => kb.holds(uiFrom, ns.rdf('type'), kb.sym(SKOS + t))
     if (isSkosFrom('ConceptScheme') || isSkosFrom('Collection') ||
         isSkosFrom('OrderedCollection') || isSkosFrom('Concept')) {
-      const deepMint = !!kb.any(form, ui('deep'))
       opts.mintClass = kb.sym(SKOS + 'Concept')
       opts.subForm = skosPrefLabelForm(kb)
-      opts.mintStatementsFun = newObject => skosMintStatements(kb, uiFrom, newObject, dataDoc, { deep: deepMint })
+      opts.mintStatementsFun = newObject => skosMintStatements(kb, uiFrom, newObject, dataDoc)
     }
   }
 
@@ -2364,20 +2362,20 @@ const RDF_NS = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#'
 
 // Gather the option concepts for a ui:Choice whose ui:from is a SKOS node.
 //
-//   skos:ConceptScheme            -> its top concepts (skos:topConceptOf /
-//                                    skos:hasTopConcept). If none are declared,
-//                                    fall back to structural roots (in-scheme
-//                                    concepts with no skos:broader); else [].
-//   ...same scheme + opts.deep    -> all concepts at any depth (in-scheme plus
-//                                    the transitive narrower/broader closure).
+// Parity with the rdf:type Choice (transitive over rdfs:subClassOf);
+// skos:broader/narrower is the SKOS analog, so both cases are transitive
+// (everything below X, never X itself):
+//   skos:ConceptScheme            -> ALL concepts in the scheme (every
+//                                    in-scheme/top concept + transitive
+//                                    narrower closure).
+//   skos:Concept                  -> ALL narrower concepts (transitive).
 //   skos:Collection / OrderedCollection -> its members (skos:member, recursing
 //                                    nested collections; skos:memberList /
 //                                    OrderedCollection keep list order).
-//   skos:Concept                  -> its direct skos:narrower children.
 //
 // Returns { options: NamedNode[], ordered: boolean }. `ordered` is true only
 // for ordered collections (the caller should not sort those).
-export function gatherSkosOptions (kb, from, doc = null, { deep = false } = {}) {
+export function gatherSkosOptions (kb, from, doc = null) {
   if (!from) return { options: [], ordered: false }
   const S = t => kb.sym(SKOS_NS + t)
   const R = t => kb.sym(RDF_NS + t)
@@ -2390,31 +2388,26 @@ export function gatherSkosOptions (kb, from, doc = null, { deep = false } = {}) 
     return { options: [...map.values()], ordered }
   }
 
+  // Scheme -> all its concepts; Concept -> all narrower. Both transitive.
+  const seeds = []
   if (isA(from, 'ConceptScheme')) {
-    kb.each(null, S('topConceptOf'), from, doc).forEach(add)
-    kb.each(from, S('hasTopConcept'), null, doc).forEach(add)
-    if (!map.size) {
-      kb.each(null, S('inScheme'), from, doc).forEach(c => {
-        if (c.termType === 'NamedNode' && !kb.any(c, S('broader'), null, doc)) add(c)
-      })
-    }
-    if (deep) {
-      kb.each(null, S('inScheme'), from, doc).forEach(add)
-      const queue = [...map.values()]
-      while (queue.length) {
-        const c = queue.shift()
-        const kids = kb.each(c, S('narrower'), null, doc).concat(kb.each(null, S('broader'), c, doc))
-        for (const k of kids) {
-          if (k.termType === 'NamedNode' && !map.has(k.value)) { add(k); queue.push(k) }
-        }
-      }
-    }
-    return { options: [...map.values()], ordered: false }
+    kb.each(null, S('inScheme'), from, doc).forEach(n => seeds.push(n))
+    kb.each(null, S('topConceptOf'), from, doc).forEach(n => seeds.push(n))
+    kb.each(from, S('hasTopConcept'), null, doc).forEach(n => seeds.push(n))
+  } else { // a Concept (exclude itself)
+    kb.each(from, S('narrower'), null, doc).forEach(n => seeds.push(n))
+    kb.each(null, S('broader'), from, doc).forEach(n => seeds.push(n))
   }
 
-  // a Concept -> its direct children (one level)
-  kb.each(from, S('narrower'), null, doc).forEach(add)
-  kb.each(null, S('broader'), from, doc).forEach(add)
+  const queue = []
+  for (const s of seeds) if (s.termType === 'NamedNode' && !map.has(s.value)) { add(s); queue.push(s) }
+  while (queue.length) { // transitive narrower/broader closure
+    const c = queue.shift()
+    const kids = kb.each(c, S('narrower'), null, doc).concat(kb.each(null, S('broader'), c, doc))
+    for (const k of kids) {
+      if (k.termType === 'NamedNode' && !map.has(k.value)) { add(k); queue.push(k) }
+    }
+  }
   return { options: [...map.values()], ordered: false }
 }
 
@@ -2454,7 +2447,7 @@ function rdfListElements (kb, head, doc) {
 // (the ui:from of a SKOS Choice), written into `doc`. So a concept minted from
 // a scheme becomes one of its (top) concepts, from a parent concept its child,
 // from a collection a member — and thus shows up in the same field.
-export function skosMintStatements (kb, from, concept, doc, { deep = false } = {}) {
+export function skosMintStatements (kb, from, concept, doc) {
   const S = t => kb.sym(SKOS_NS + t)
   const isA = (n, cls) => !!n && kb.holds(n, ns.rdf('type'), kb.sym(SKOS_NS + cls))
   const st = (s, p, o) => $rdf.st(s, p, o, doc)
@@ -2465,10 +2458,9 @@ export function skosMintStatements (kb, from, concept, doc, { deep = false } = {
     return out
   }
   if (isA(from, 'ConceptScheme')) {
+    // A new concept minted from a scheme has no parent → a top concept.
     out.push(st(concept, S('inScheme'), from))
-    // A top-only field lists topConceptOf concepts; assert it so the new one
-    // appears immediately (with ui:deep, plain inScheme already suffices).
-    if (!deep) out.push(st(concept, S('topConceptOf'), from))
+    out.push(st(concept, S('topConceptOf'), from))
     return out
   }
   // `from` is a Concept -> the new concept is its child; inherit its scheme.

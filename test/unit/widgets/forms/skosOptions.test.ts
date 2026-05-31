@@ -35,31 +35,25 @@ describe('gatherSkosOptions', () => {
     expect(gatherSkosOptions).toBeInstanceOf(Function)
   })
 
-  it('a ConceptScheme yields its top concepts only', () => {
+  it('a ConceptScheme yields all concepts in the scheme (transitive)', () => {
     loadNested()
-    expect(vals(gatherSkosOptions(store, node('Images'), DOC))).toEqual(['#Art', '#Life'])
-  })
-
-  it('a ConceptScheme with { deep } yields all concepts at any depth', () => {
-    loadNested()
-    expect(vals(gatherSkosOptions(store, node('Images'), DOC, { deep: true })))
+    expect(vals(gatherSkosOptions(store, node('Images'), DOC)))
       .toEqual(['#Art', '#Life', '#Marble', '#Nature', '#Painting', '#Sculpture'])
   })
 
-  it('a Concept yields its direct narrower children', () => {
+  it('a Concept yields all narrower concepts (transitive)', () => {
     loadNested()
-    expect(vals(gatherSkosOptions(store, node('Art'), DOC))).toEqual(['#Painting', '#Sculpture'])
+    expect(vals(gatherSkosOptions(store, node('Art'), DOC))).toEqual(['#Marble', '#Painting', '#Sculpture'])
   })
 
-  it('falls back to structural roots when no top concepts are declared', () => {
+  it('a scheme with only inScheme links yields all in-scheme concepts', () => {
     add(node('S'), ns.rdf('type'), skos('ConceptScheme'))
     add(node('A'), ns.rdf('type'), skos('Concept'))
     add(node('A'), skos('inScheme'), node('S'))
     add(node('B'), ns.rdf('type'), skos('Concept'))
     add(node('B'), skos('inScheme'), node('S'))
     add(node('B'), skos('broader'), node('A'))
-    // A has no broader -> a root; B has a parent -> excluded
-    expect(vals(gatherSkosOptions(store, node('S'), DOC))).toEqual(['#A'])
+    expect(vals(gatherSkosOptions(store, node('S'), DOC))).toEqual(['#A', '#B'])
   })
 
   it('an empty scheme yields no options', () => {
@@ -100,20 +94,14 @@ describe('skosMintStatements', () => {
     .replace('http://www.w3.org/1999/02/22-rdf-syntax-ns#', 'rdf:')
   const triples = (sts: any[]) => sts.map(s => `${short(s.subject.value)} ${short(s.predicate.value)} ${short(s.object.value)}`).sort()
 
-  it('places a concept minted from a scheme (top-only) as a typed top concept', () => {
+  it('places a concept minted from a scheme as a typed top concept', () => {
     add(node('Images'), ns.rdf('type'), skos('ConceptScheme'))
-    const out = skosMintStatements(store, node('Images'), node('New'), DOC, { deep: false })
+    const out = skosMintStatements(store, node('Images'), node('New'), DOC)
     expect(triples(out)).toEqual([
       '#New rdf:type skos:Concept',
       '#New skos:inScheme #Images',
       '#New skos:topConceptOf #Images'
     ].sort())
-  })
-
-  it('with { deep } places it in-scheme without topConceptOf', () => {
-    add(node('Images'), ns.rdf('type'), skos('ConceptScheme'))
-    const out = skosMintStatements(store, node('Images'), node('New'), DOC, { deep: true })
-    expect(triples(out)).toEqual(['#New rdf:type skos:Concept', '#New skos:inScheme #Images'].sort())
   })
 
   it('mints under a concept as a child, inheriting the scheme', () => {
@@ -153,7 +141,7 @@ describe('ui:Choice SKOS render (integration / jsdom)', () => {
     return form
   }
 
-  it('renders a <select> of the scheme top concepts (field enumeration branch)', () => {
+  it('renders a <select> of the scheme concepts (field enumeration branch)', () => {
     loadScheme()
     const box = Choice()(document, document.createElement('div'), {}, REC, makeForm(), DOC, jest.fn())
     expect(optionTexts(box)).toEqual(expect.arrayContaining(['Art', 'Life']))
