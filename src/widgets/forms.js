@@ -853,6 +853,19 @@ field[ns.ui('Choice').uri] = function (
   // TODO: this checks for any occurrence, regardless of true or false setting
   if (kb.any(form, ui('canMintNew'))) {
     opts.mint = '* Create new *' // @@ could be better
+    // SKOS: when ui:from is a skos:ConceptScheme / Collection / Concept, mint a
+    // skos:Concept (NOT an instance of the scheme) and place it into the
+    // vocabulary (skosMintStatements) so it appears in this same field. Without
+    // this the generic mint would create an untyped, unplaced orphan node.
+    const SKOS = 'http://www.w3.org/2004/02/skos/core#'
+    const isSkosFrom = t => kb.holds(uiFrom, ns.rdf('type'), kb.sym(SKOS + t))
+    if (isSkosFrom('ConceptScheme') || isSkosFrom('Collection') ||
+        isSkosFrom('OrderedCollection') || isSkosFrom('Concept')) {
+      const deepMint = !!kb.any(form, ui('deep'))
+      opts.mintClass = kb.sym(SKOS + 'Concept')
+      opts.subForm = skosPrefLabelForm(kb)
+      opts.mintStatementsFun = newObject => skosMintStatements(kb, uiFrom, newObject, dataDoc, { deep: deepMint })
+    }
   }
 
   const multiSelect = kb.any(form, ui('multiselect')) // Optional
@@ -2187,7 +2200,7 @@ export function makeSelectForChoice (
             kb,
             subject,
             predicate,
-            uiFrom,
+            options.mintClass || uiFrom,
             options.subForm,
             dataDoc,
             function (ok, body) {
@@ -2202,7 +2215,8 @@ export function makeSelectForChoice (
           newObject = newThing(dataDoc)
         }
         is.push($rdf.st(subject, predicate, kb.sym(newObject), dataDoc))
-        if (uiFrom) is.push($rdf.st(newObject, ns.rdf('type'), kb.sym(uiFrom), dataDoc))
+        const mintType = options.mintClass || uiFrom
+        if (mintType) is.push($rdf.st(newObject, ns.rdf('type'), kb.sym(mintType), dataDoc))
 
         // not sure if this 'if' is used because I cannot find mintStatementsFun
         if (options.mintStatementsFun) {
@@ -2434,4 +2448,43 @@ function rdfListElements (kb, head, doc) {
     node = kb.any(node, kb.sym(RDF_NS + 'rest'), null, doc)
   }
   return out
+}
+
+// Statements placing a freshly minted `concept` correctly relative to `from`
+// (the ui:from of a SKOS Choice), written into `doc`. So a concept minted from
+// a scheme becomes one of its (top) concepts, from a parent concept its child,
+// from a collection a member — and thus shows up in the same field.
+export function skosMintStatements (kb, from, concept, doc, { deep = false } = {}) {
+  const S = t => kb.sym(SKOS_NS + t)
+  const isA = (n, cls) => !!n && kb.holds(n, ns.rdf('type'), kb.sym(SKOS_NS + cls))
+  const st = (s, p, o) => $rdf.st(s, p, o, doc)
+  const out = [st(concept, ns.rdf('type'), S('Concept'))]
+
+  if (isA(from, 'Collection') || isA(from, 'OrderedCollection')) {
+    out.push(st(from, S('member'), concept))
+    return out
+  }
+  if (isA(from, 'ConceptScheme')) {
+    out.push(st(concept, S('inScheme'), from))
+    // A top-only field lists topConceptOf concepts; assert it so the new one
+    // appears immediately (with ui:deep, plain inScheme already suffices).
+    if (!deep) out.push(st(concept, S('topConceptOf'), from))
+    return out
+  }
+  // `from` is a Concept -> the new concept is its child; inherit its scheme.
+  out.push(st(concept, S('broader'), from))
+  const scheme = kb.any(from, S('inScheme'), null, doc) || kb.any(from, S('topConceptOf'), null, doc)
+  if (scheme) out.push(st(concept, S('inScheme'), scheme))
+  return out
+}
+
+// A throwaway one-field ui:Form (a skos:prefLabel text field) for promptForNew
+// to render so the user can name the new concept.
+function skosPrefLabelForm (kb) {
+  const g = kb.sym('urn:solid-ui-skos:mint-form')
+  const f = $rdf.blankNode()
+  kb.add(f, ns.rdf('type'), ns.ui('SingleLineTextField'), g)
+  kb.add(f, ns.ui('property'), kb.sym(SKOS_NS + 'prefLabel'), g)
+  kb.add(f, ns.ui('label'), $rdf.literal('Name'), g)
+  return f
 }

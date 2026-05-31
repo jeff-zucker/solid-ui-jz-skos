@@ -4,7 +4,7 @@ import ns from '../../../../src/ns'
 import { store } from 'solid-logic'
 import { clearStore } from '../../helpers/clearStore'
 // @ts-ignore — forms.js is untyped JS
-import { gatherSkosOptions } from '../../../../src/widgets/forms'
+import { gatherSkosOptions, skosMintStatements } from '../../../../src/widgets/forms'
 
 silenceDebugMessages()
 afterEach(clearStore)
@@ -76,5 +76,46 @@ describe('gatherSkosOptions', () => {
     const res = gatherSkosOptions(store, node('C'), DOC)
     expect(vals(res)).toEqual(['#X', '#Y'])
     expect(res.ordered).toBe(false)
+  })
+})
+
+describe('skosMintStatements', () => {
+  const short = (u: string) => u
+    .replace(BASE, '')
+    .replace('http://www.w3.org/2004/02/skos/core#', 'skos:')
+    .replace('http://www.w3.org/1999/02/22-rdf-syntax-ns#', 'rdf:')
+  const triples = (sts: any[]) => sts.map(s => `${short(s.subject.value)} ${short(s.predicate.value)} ${short(s.object.value)}`).sort()
+
+  it('places a concept minted from a scheme (top-only) as a typed top concept', () => {
+    add(node('Images'), ns.rdf('type'), skos('ConceptScheme'))
+    const out = skosMintStatements(store, node('Images'), node('New'), DOC, { deep: false })
+    expect(triples(out)).toEqual([
+      '#New rdf:type skos:Concept',
+      '#New skos:inScheme #Images',
+      '#New skos:topConceptOf #Images'
+    ].sort())
+  })
+
+  it('with { deep } places it in-scheme without topConceptOf', () => {
+    add(node('Images'), ns.rdf('type'), skos('ConceptScheme'))
+    const out = skosMintStatements(store, node('Images'), node('New'), DOC, { deep: true })
+    expect(triples(out)).toEqual(['#New rdf:type skos:Concept', '#New skos:inScheme #Images'].sort())
+  })
+
+  it('mints under a concept as a child, inheriting the scheme', () => {
+    add(node('Art'), ns.rdf('type'), skos('Concept'))
+    add(node('Art'), skos('topConceptOf'), node('Images'))
+    const out = skosMintStatements(store, node('Art'), node('New'), DOC)
+    expect(triples(out)).toEqual([
+      '#New rdf:type skos:Concept',
+      '#New skos:broader #Art',
+      '#New skos:inScheme #Images'
+    ].sort())
+  })
+
+  it('mints into a collection as a member', () => {
+    add(node('C'), ns.rdf('type'), skos('Collection'))
+    const out = skosMintStatements(store, node('C'), node('New'), DOC)
+    expect(triples(out)).toEqual(['#C skos:member #New', '#New rdf:type skos:Concept'].sort())
   })
 })
