@@ -77,6 +77,20 @@ describe('gatherSkosOptions', () => {
     expect(vals(res)).toEqual(['#X', '#Y'])
     expect(res.ordered).toBe(false)
   })
+
+  it('an OrderedCollection (skos:memberList) keeps list order, ordered: true', () => {
+    add(node('C'), ns.rdf('type'), skos('OrderedCollection'))
+    // skos:memberList -> an rdf:list ( Z A M ), built as a first/rest chain
+    add(node('C'), skos('memberList'), node('l1'))
+    add(node('l1'), ns.rdf('first'), node('Z')); add(node('l1'), ns.rdf('rest'), node('l2'))
+    add(node('l2'), ns.rdf('first'), node('A')); add(node('l2'), ns.rdf('rest'), node('l3'))
+    add(node('l3'), ns.rdf('first'), node('M')); add(node('l3'), ns.rdf('rest'), ns.rdf('nil'))
+    for (const c of ['Z', 'A', 'M']) add(node(c), ns.rdf('type'), skos('Concept'))
+    const res = gatherSkosOptions(store, node('C'), DOC)
+    expect(res.ordered).toBe(true)
+    // preserved list order — NOT alphabetised
+    expect(res.options.map((o: any) => o.value.replace(BASE, ''))).toEqual(['#Z', '#A', '#M'])
+  })
 })
 
 describe('skosMintStatements', () => {
