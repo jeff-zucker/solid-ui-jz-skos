@@ -809,6 +809,20 @@ field[ns.ui('Choice').uri] = function (
   function getSelectorOptions (dataSource) {
     let possible = []
     let possibleProperties
+
+    // SKOS: when ui:from is a skos:ConceptScheme / Collection / Concept, the
+    // options come from the SKOS graph rather than rdf:type instances (see
+    // gatherSkosOptions). ui:deep widens a scheme from its top concepts to all
+    // concepts at any depth. Additive — ui:from at one of these previously
+    // matched nothing.
+    const SKOS = 'http://www.w3.org/2004/02/skos/core#'
+    const isSkosFrom = t => kb.holds(uiFrom, ns.rdf('type'), kb.sym(SKOS + t))
+    if (isSkosFrom('ConceptScheme') || isSkosFrom('Collection') ||
+        isSkosFrom('OrderedCollection') || isSkosFrom('Concept')) {
+      const deep = !!kb.any(form, ns.ui('deep'))
+      return gatherSkosOptions(kb, uiFrom, dataSource, { deep }).options
+    }
+
     possible = kb.each(undefined, ns.rdf('type'), uiFrom, formDoc)
     for (const x in findMembersNT(kb, uiFrom, dataSource)) {
       possible.push(kb.fromNT(x))
@@ -2329,4 +2343,95 @@ function findMembersNT (store, thisClass, quad) {
   }
 
   return members
+}
+
+const SKOS_NS = 'http://www.w3.org/2004/02/skos/core#'
+const RDF_NS = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#'
+
+// Gather the option concepts for a ui:Choice whose ui:from is a SKOS node.
+//
+//   skos:ConceptScheme            -> its top concepts (skos:topConceptOf /
+//                                    skos:hasTopConcept). If none are declared,
+//                                    fall back to structural roots (in-scheme
+//                                    concepts with no skos:broader); else [].
+//   ...same scheme + opts.deep    -> all concepts at any depth (in-scheme plus
+//                                    the transitive narrower/broader closure).
+//   skos:Collection / OrderedCollection -> its members (skos:member, recursing
+//                                    nested collections; skos:memberList /
+//                                    OrderedCollection keep list order).
+//   skos:Concept                  -> its direct skos:narrower children.
+//
+// Returns { options: NamedNode[], ordered: boolean }. `ordered` is true only
+// for ordered collections (the caller should not sort those).
+export function gatherSkosOptions (kb, from, doc = null, { deep = false } = {}) {
+  if (!from) return { options: [], ordered: false }
+  const S = t => kb.sym(SKOS_NS + t)
+  const R = t => kb.sym(RDF_NS + t)
+  const isA = (n, cls) => !!n && kb.holds(n, R('type'), kb.sym(SKOS_NS + cls))
+  const map = new Map()
+  const add = n => { if (n && n.termType === 'NamedNode' && !map.has(n.value)) map.set(n.value, n) }
+
+  if (isA(from, 'Collection') || isA(from, 'OrderedCollection')) {
+    const ordered = collectSkosMembers(kb, from, doc, add, S, isA)
+    return { options: [...map.values()], ordered }
+  }
+
+  if (isA(from, 'ConceptScheme')) {
+    kb.each(null, S('topConceptOf'), from, doc).forEach(add)
+    kb.each(from, S('hasTopConcept'), null, doc).forEach(add)
+    if (!map.size) {
+      kb.each(null, S('inScheme'), from, doc).forEach(c => {
+        if (c.termType === 'NamedNode' && !kb.any(c, S('broader'), null, doc)) add(c)
+      })
+    }
+    if (deep) {
+      kb.each(null, S('inScheme'), from, doc).forEach(add)
+      const queue = [...map.values()]
+      while (queue.length) {
+        const c = queue.shift()
+        const kids = kb.each(c, S('narrower'), null, doc).concat(kb.each(null, S('broader'), c, doc))
+        for (const k of kids) {
+          if (k.termType === 'NamedNode' && !map.has(k.value)) { add(k); queue.push(k) }
+        }
+      }
+    }
+    return { options: [...map.values()], ordered: false }
+  }
+
+  // a Concept -> its direct children (one level)
+  kb.each(from, S('narrower'), null, doc).forEach(add)
+  kb.each(null, S('broader'), from, doc).forEach(add)
+  return { options: [...map.values()], ordered: false }
+}
+
+function collectSkosMembers (kb, coll, doc, add, S, isA) {
+  let ordered = isA(coll, 'OrderedCollection')
+  const listHead = kb.any(coll, S('memberList'), null, doc)
+  if (listHead) {
+    ordered = true
+    for (const el of rdfListElements(kb, listHead, doc)) {
+      if (isA(el, 'Collection') || isA(el, 'OrderedCollection')) collectSkosMembers(kb, el, doc, add, S, isA)
+      else add(el)
+    }
+  }
+  for (const m of kb.each(coll, S('member'), null, doc)) {
+    if (isA(m, 'Collection') || isA(m, 'OrderedCollection')) collectSkosMembers(kb, m, doc, add, S, isA)
+    else add(m)
+  }
+  return ordered
+}
+
+function rdfListElements (kb, head, doc) {
+  if (head && head.termType === 'Collection' && Array.isArray(head.elements)) return head.elements
+  const NIL = RDF_NS + 'nil'
+  const out = []
+  const seen = new Set()
+  let node = head
+  while (node && node.value !== NIL && !seen.has(node.value)) {
+    seen.add(node.value)
+    const first = kb.any(node, kb.sym(RDF_NS + 'first'), null, doc)
+    if (first) out.push(first)
+    node = kb.any(node, kb.sym(RDF_NS + 'rest'), null, doc)
+  }
+  return out
 }
