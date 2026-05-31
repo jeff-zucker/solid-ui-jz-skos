@@ -812,9 +812,8 @@ field[ns.ui('Choice').uri] = function (
 
     // SKOS: when ui:from is a skos:ConceptScheme / Collection / Concept, the
     // options come from the SKOS graph rather than rdf:type instances (see
-    // gatherSkosOptions). ui:deep widens a scheme from its top concepts to all
-    // concepts at any depth. Additive — ui:from at one of these previously
-    // matched nothing.
+    // gatherSkosOptions — scheme & concept are transitive). Additive: ui:from
+    // at one of these previously matched nothing.
     const SKOS = 'http://www.w3.org/2004/02/skos/core#'
     const isSkosFrom = t => kb.holds(uiFrom, ns.rdf('type'), kb.sym(SKOS + t))
     if (isSkosFrom('ConceptScheme') || isSkosFrom('Collection') ||
