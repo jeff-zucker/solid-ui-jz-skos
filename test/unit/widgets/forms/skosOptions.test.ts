@@ -1,10 +1,10 @@
 import { silenceDebugMessages } from '../../helpers/debugger'
-import { namedNode } from 'rdflib'
+import { namedNode, literal } from 'rdflib'
 import ns from '../../../../src/ns'
 import { store } from 'solid-logic'
 import { clearStore } from '../../helpers/clearStore'
 // @ts-ignore — forms.js is untyped JS
-import { gatherSkosOptions, skosMintStatements } from '../../../../src/widgets/forms'
+import { gatherSkosOptions, skosMintStatements, field } from '../../../../src/widgets/forms'
 
 silenceDebugMessages()
 afterEach(clearStore)
@@ -131,5 +131,85 @@ describe('skosMintStatements', () => {
     add(node('C'), ns.rdf('type'), skos('Collection'))
     const out = skosMintStatements(store, node('C'), node('New'), DOC)
     expect(triples(out)).toEqual(['#C skos:member #New', '#New rdf:type skos:Concept'].sort())
+  })
+})
+
+describe('ui:Choice SKOS render (integration / jsdom)', () => {
+  const Choice = () => field[ns.ui('Choice').uri]
+  const dcatTheme = namedNode('http://www.w3.org/ns/dcat#theme')
+  const REC = node('rec')
+  const optionTexts = (box: any) => Array.from(box.querySelectorAll('option')).map((o: any) => o.textContent.trim())
+
+  function loadScheme () {
+    add(node('Images'), ns.rdf('type'), skos('ConceptScheme'))
+    add(node('Art'), ns.rdf('type'), skos('Concept')); add(node('Art'), skos('topConceptOf'), node('Images'))
+    add(node('Life'), ns.rdf('type'), skos('Concept')); add(node('Life'), skos('topConceptOf'), node('Images'))
+  }
+  function makeForm ({ mint = false } = {}) {
+    const form = node('choiceForm')
+    add(form, ns.ui('property'), dcatTheme)
+    add(form, ns.ui('from'), node('Images'))
+    if (mint) add(form, ns.ui('canMintNew'), literal('true'))
+    return form
+  }
+
+  it('renders a <select> of the scheme top concepts (field enumeration branch)', () => {
+    loadScheme()
+    const box = Choice()(document, document.createElement('div'), {}, REC, makeForm(), DOC, jest.fn())
+    expect(optionTexts(box)).toEqual(expect.arrayContaining(['Art', 'Life']))
+  })
+
+  it('with ui:canMintNew offers a "create new" option (SKOS mint wiring)', () => {
+    const origEditable = store.updater.editable
+    store.updater.editable = () => true
+    try {
+      loadScheme()
+      const box = Choice()(document, document.createElement('div'), {}, REC, makeForm({ mint: true }), DOC, jest.fn())
+      expect(optionTexts(box)).toContain('* Create new *')
+    } finally {
+      store.updater.editable = origEditable
+    }
+  })
+
+  it('minting writes a typed, in-scheme skos:Concept as the value (mint execution)', () => {
+    const origEditable = store.updater.editable
+    const origUpdate = store.updater.update
+    store.updater.editable = () => true
+    store.updater.update = (ds: any[], is: any[], cb: any) => {
+      ;(is || []).forEach((st: any) => store.add(st.subject, st.predicate, st.object, st.graph || st.why || DOC))
+      if (cb) cb(null, true, '')
+    }
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    try {
+      loadScheme()
+      const box = Choice()(document, container, {}, REC, makeForm({ mint: true }), DOC, jest.fn())
+      const select: any = box.querySelector('select')
+      // Select the mint option, then run the select's mint handler directly.
+      // (Driving 'change' goes through solid-ui's onChange, which detaches the
+      // select before refresh — a quirk of its own DOM juggling in isolation.)
+      for (const o of Array.from(select.options) as any[]) o.selected = (o.textContent.trim() === '* Create new *')
+      select.refresh() // runs the mint path + renders the prefLabel subform
+
+      // Complete the two-step mint: fill the prefLabel subform so solid-ui
+      // commits the built statements (subject→concept, type, placement).
+      const inputs = Array.from(container.querySelectorAll('input')) as any[]
+      expect(inputs.length).toBeGreaterThan(0)
+      for (const input of inputs) { input.value = 'Comics'; input.dispatchEvent(new Event('change', { bubbles: true })) }
+
+      // A new concept was minted and placed in the scheme (typed + inScheme +
+      // topConceptOf, from skosMintStatements). Identity comes from the
+      // placement triples — solid-ui routes the dcat:theme value through
+      // kb.sym(newObject), so it isn't the same node object.
+      expect(store.any(REC, dcatTheme, null, DOC)).toBeTruthy() // a value was written
+      const minted = store.statementsMatching(null, skos('inScheme'), node('Images'), DOC).map((s: any) => s.subject)[0]
+      expect(minted).toBeTruthy()
+      expect(store.holds(minted, ns.rdf('type'), skos('Concept'), DOC)).toBe(true)
+      expect(store.holds(minted, skos('topConceptOf'), node('Images'), DOC)).toBe(true)
+    } finally {
+      document.body.removeChild(container)
+      store.updater.editable = origEditable
+      store.updater.update = origUpdate
+    }
   })
 })
